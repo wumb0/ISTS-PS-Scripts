@@ -30,7 +30,7 @@ if ($InstallRoles){
     Install-WindowsFeature -Name RSAT-ADDS
     Install-WindowsFeature -Name RSAT-DNS-Server
     Import-Module ADDSDeployment
-    Install-ADDSForest -SkipPreChecks -DomainName "team$TeamNumber.ists" -SafeModeAdministratorPassword $SMPass -DomainMode 4 -ForestMode 4 -DomainNetbiosName "TEAM$TeamNumber" -Force
+    Install-ADDSForest -SkipPreChecks -DomainName "team$TeamNumber.ists" -SafeModeAdministratorPassword $SMPass -DomainMode Win2008R2 -ForestMode Win2008R2 -DomainNetbiosName "TEAM$TeamNumber" -Force
 }
 
 if ($DNSForward){

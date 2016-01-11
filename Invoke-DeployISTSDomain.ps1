@@ -9,11 +9,12 @@
 
 begin { #define functions in here
     Add-PSSnapin vmware.vimautomation.core -ErrorAction Stop
-    if ($VCenterUser -and $VCenterPassword){
-        $VcenterPassword = 
-        Connect-VIServer -Server $VCenterServerAddress -Protocol Https -Force -ErrorAction Stop -User $VCenterUser -Password $VCenterPassword
-    } else {
-        Connect-VIServer -Server $VCenterServerAddress -Protocol Https -Force -ErrorAction Stop
+    if (!$global:DefaultVIServer){ #make sure we aren't already connected
+        if ($VCenterUser -and $VCenterPassword){ 
+            Connect-VIServer -Server $VCenterServerAddress -Protocol Https -Force -ErrorAction Stop -User $VCenterUser -Password $VCenterPassword
+        } else {
+            Connect-VIServer -Server $VCenterServerAddress -Protocol Https -Force -ErrorAction Stop
+        }
     }
 }
 
