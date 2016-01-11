@@ -19,11 +19,10 @@ begin { #define functions in here
 
 process { #define main function in here
     $GuestUser = "Administrator"
-    $GuestPassword = "Netsys1!"
+    $GuestPassword = "Student1"
     $VMS = Get-VM | Where {$_.Name -contains "ADDNS" -and $_.Folder.Name -eq "ISTS-Test"}
     foreach ($VM in $VMS){
         Copy-VMGuestFile -Source .\Deploy-ISTSDomain.ps1 -Destination C:\Windows\Temp -VM $VM -GuestUser $GuestUser -GuestPassword $GuestPassword -LocalToGuest -Confirm:$false -Force
-        Invoke-VMScript -ScriptText "\Windows\Temp\Deploy-ISTSDomain.ps1 -TeamNumber $TeamNumber -InstallRoles" -VM $VM -Confirm:$false -GuestUser $GuestUser -GuestPassword $GuestPassword
-        Invoke-VMScript -ScriptText "Remove-Item -Path \Windows\Temp\Deploy-ISTSDomain.ps1" -VM $VM -Confirm:$false -GuestUser $GuestUser -GuestPassword $GuestPassword
+        Invoke-VMScript -ScriptText "\Windows\Temp\Deploy-ISTSDomain.ps1 -TeamNumber $TeamNumber -InstallRoles; Remove-Item -Path \Windows\Temp\Deploy-ISTSDomain.ps1" -VM $VM -Confirm:$false -GuestUser $GuestUser -GuestPassword $GuestPassword
     }
 }
