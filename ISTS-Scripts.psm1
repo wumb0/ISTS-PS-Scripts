@@ -1,18 +1,18 @@
-﻿
-if ( (Get-PSSnapin -Name VMware.VimAutomation.Core -Registered -ErrorAction SilentlyContinue) -ne $null ){
-    try {Add-PSSnapin vmware.vimautomation.core -ErrorAction SilentlyContinue} catch {}
-} else {
-    Write-Error "PowerCLI is not installed. Install PowerCLI and try again"
-    exit
+﻿if ( (Get-PSSnapin -Name VMware.VimAutomation.Core -ErrorAction SilentlyContinue) -eq $null ){
+    Write-Error "Make sure vmware.vimautomation.core is added. Import in PowerCLI shell or just Add-PSSnapin"
 }
 
-
 #### Global Variables ####
-
+$ISTS_ModulePath = Split-Path -parent $PSCommandPath
 
 #### External Includes ####
 
-#### Misc. Functions ####
+
+#### Functions ####
+function Remove-ISTSVars {
+    Remove-Variable -Name ISTS_* -Scope Global
+}
+
 function Connect-ISTSVCenter {
     try { #make sure we aren't already connected
         $server = (Get-VIAccount)[0].Server.Name
@@ -41,6 +41,70 @@ function Import-ISTSConfig {
     }
 }
 
-#### Read in config ####
-Import-ISTSConfig .\ISTS-Scripts.conf
-Connect-ISTSVCenter
+# Deploys ISTS domain controller
+function Invoke-DeployISTSDomainController {
+    param ( 
+        [Parameter(Mandatory=$true)][int]$TeamNumber,
+        [Parameter(Mandatory=$true,ValueFromPipeline=$true)][VMware.VimAutomation.ViCore.Impl.V1.Inventory.VirtualMachineImpl]$VM,
+        [String]$GuestUser = "Administrator",
+        [String]$GuestPassword = "Student1",
+        [switch]$RunAsync = $false
+    )
+
+    process {
+        foreach ($V in $VM){
+            Copy-VMGuestFile -Source $ISTS_ModulePath\resource\Deploy-ISTSDomainController.ps1 -Destination C:\Windows\Temp -VM $V -GuestUser $GuestUser -GuestPassword $GuestPassword -LocalToGuest -Confirm:$false -Force
+            Invoke-VMScript -ScriptText "\Windows\Temp\Deploy-ISTSDomainController.ps1 -TeamNumber $TeamNumber -InstallRoles; Remove-Item -Path \Windows\Temp\Deploy-ISTSDomainController.ps1" -VM $V -RunAsync:$RunAsync -Confirm:$false -GuestUser $GuestUser -GuestPassword $GuestPassword 
+        }
+    }
+}
+
+function Install-PBIS {
+    param (
+        [Parameter(Mandatory=$true)][String]$OSString,
+        [Parameter(Mandatory=$true)][VMware.VimAutomation.ViCore.Impl.V1.Inventory.VirtualMachineImpl]$VM
+    )
+    Write-Host "Trying to match $($VM.Name)"
+    if ($OSString -imatch "ubuntu" -or $OSString -imatch "debian"){
+        Write-Host "Matched Debian/Ubuntu"
+        $URL = $ISTS_PbisDebURL
+    } elseif ($OSString -imatch "suse" -or $OSString -imatch "centos" -or $OSString -imatch "fedora" -or $OSString -imatch ".el") {
+        Write-Host "Matched RHEL-based distribution"
+        $URL = $ISTS_PbisRpmURL
+    } else {
+        Write-Warning "Host not matched"
+        return $false
+    }
+
+    $Filename = $URL.Split("/")[-1]
+    if (!(Test-Path ./$Filename)){
+        Invoke-WebRequest $URL -OutFile $Filename
+    }
+    Copy-VMGuestFile -Source ./$Filename -Destination /tmp -LocalToGuest -VM $VM -GuestUser $GuestUser -GuestPassword $GuestPassword
+    Invoke-VMScript -ScriptText "chmod +x /tmp/$Filename;/tmp/$Filename -- --dont-join --no-legacy install;rm /tmp/$Filename" -GuestUser $GuestUser -GuestPassword $GuestPassword -VM $VM
+    return $true
+}
+
+function Invoke-JoinLinuxHostsToDomain {
+    param (
+        [Parameter(Mandatory=$true)][int]$TeamNumber,
+        [Parameter(Mandatory=$true,ValueFromPipeline=$true)][VMware.VimAutomation.ViCore.Impl.V1.Inventory.VirtualMachineImpl]$VM,
+        [String]$GuestUser = "root",
+        [String]$GuestPassword = "student",
+        [String]$DomainAdminUser = "Administrator",
+        [String]$DomainAdminPassword = "Student1!",
+        [String]$DNSServerIP = "172.20.15.38", #change this later, maybe make global
+        [switch]$RunAsync = $false
+    )
+    process {
+        foreach ($V in $VM){
+            $OSString = (Invoke-VMScript -ScriptText "uname -a;cat /etc/issue" -GuestUser $GuestUser -GuestPassword $GuestPassword -VM $V).ScriptOutput
+            if (Install-PBIS -OSString $OSString -VM $V){
+                Invoke-VMScript -ScriptText "echo nameserver $DNSServerIP > /etc/resolv.conf; /opt/pbis/bin/domainjoin-cli join TEAM$TeamNumber.ISTS $DomainAdminUser $DomainAdminPassword" -VM $V -GuestUser $GuestUser -GuestPassword $GuestPassword
+            }
+        }
+    }
+}
+
+#### Initial config and startup ####
+Import-ISTSConfig $ISTS_ModulePath\ISTS-Scripts.conf
