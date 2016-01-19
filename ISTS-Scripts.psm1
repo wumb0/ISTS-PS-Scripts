@@ -31,6 +31,7 @@ function Import-ISTSConfig {
     param (
         [string]$ConfigFile
     )
+    Remove-ISTSVars
     foreach ($line in Get-Content $ConfigFile){
         if ($line[0] -ne "#"){
             $splitline = $line.split("=")
@@ -54,7 +55,9 @@ function Invoke-DeployISTSDomainController {
     process {
         foreach ($V in $VM){
             Copy-VMGuestFile -Source $ISTS_ModulePath\resource\Deploy-ISTSDomainController.ps1 -Destination C:\Windows\Temp -VM $V -GuestUser $GuestUser -GuestPassword $GuestPassword -LocalToGuest -Confirm:$false -Force
-            Invoke-VMScript -ScriptText "\Windows\Temp\Deploy-ISTSDomainController.ps1 -TeamNumber $TeamNumber -InstallRoles; Remove-Item -Path \Windows\Temp\Deploy-ISTSDomainController.ps1" -VM $V -RunAsync:$RunAsync -Confirm:$false -GuestUser $GuestUser -GuestPassword $GuestPassword 
+            $DomainName = "$ISTS_BottomLevelDomainNamePrefix$TeamNumber.$ISTS_DomainNameSuffix"
+            $NetBiosName = "$ISTS_NetBiosName$TeamNumber".ToUpper()
+            Invoke-VMScript -ScriptText "\Windows\Temp\Deploy-ISTSDomainController.ps1 -DomainName $DomainName -NetBiosName $NetBiosName -InstallRoles; Remove-Item -Path \Windows\Temp\Deploy-ISTSDomainController.ps1" -VM $V -RunAsync:$RunAsync -Confirm:$false -GuestUser $GuestUser -GuestPassword $GuestPassword
         }
     }
 }
@@ -77,10 +80,11 @@ function Install-PBIS {
     }
 
     $Filename = $URL.Split("/")[-1]
-    if (!(Test-Path ./$Filename)){
-        Invoke-WebRequest $URL -OutFile $Filename
+    if (!(Test-Path .\data\$Filename)){
+        New-Item -ItemType Directory -Force -Path $ISTS_ModulePath\data\$Filename
+        Invoke-WebRequest $URL -OutFile $ISTS_ModulePath\data\$Filename
     }
-    Copy-VMGuestFile -Source ./$Filename -Destination /tmp -LocalToGuest -VM $VM -GuestUser $GuestUser -GuestPassword $GuestPassword
+    Copy-VMGuestFile -Source $ISTS_ModulePath\data\$Filename -Destination /tmp -LocalToGuest -VM $VM -GuestUser $GuestUser -GuestPassword $GuestPassword
     Invoke-VMScript -ScriptText "chmod +x /tmp/$Filename;/tmp/$Filename -- --dont-join --no-legacy install;rm /tmp/$Filename" -GuestUser $GuestUser -GuestPassword $GuestPassword -VM $VM
     return $true
 }
@@ -100,7 +104,8 @@ function Invoke-JoinLinuxHostsToDomain {
         foreach ($V in $VM){
             $OSString = (Invoke-VMScript -ScriptText "uname -a;cat /etc/issue" -GuestUser $GuestUser -GuestPassword $GuestPassword -VM $V).ScriptOutput
             if (Install-PBIS -OSString $OSString -VM $V){
-                Invoke-VMScript -ScriptText "echo nameserver $DNSServerIP > /etc/resolv.conf; /opt/pbis/bin/domainjoin-cli join TEAM$TeamNumber.ISTS $DomainAdminUser $DomainAdminPassword" -VM $V -GuestUser $GuestUser -GuestPassword $GuestPassword
+                $domain = "$ISTS_BottomLevelDomainNamePrefix$TeamNumber.$ISTS_DomainNameSuffix".ToUpper()
+                Invoke-VMScript -ScriptText "echo nameserver $DNSServerIP > /etc/resolv.conf; /opt/pbis/bin/domainjoin-cli join $domain $DomainAdminUser $DomainAdminPassword" -VM $V -GuestUser $GuestUser -GuestPassword $GuestPassword
             }
         }
     }
