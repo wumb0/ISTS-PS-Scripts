@@ -106,10 +106,12 @@ function Invoke-JoinLinuxHostsToDomain {
 function Start-ISTSDeployFromCSV {
     param (
         [Parameter(Mandatory=$true)][string]$filename,
-        [switch]$RunAsync = $false,
-        [switch]$NetAdaptersOnly = $false,
-        [int[]]$TeamNumbers
+        [Parameter(Mandatory=$true)][int[]]$TeamNumbers,
+        [switch]$StartOnCompletion = $false,
+        [switch]$TakeBaseSnapshot = [bool]$ISTS_TakeBaseSnapshot
     )
+    $taskTab = @{}
+    $nameNetwork = @{}
     Import-Csv $filename | % {
         $Template = $null
         $Template = Get-Template -Name $_.TemplateName -ErrorAction SilentlyContinue
@@ -123,19 +125,67 @@ function Start-ISTSDeployFromCSV {
         }
 
         foreach ($TeamNumber in $TeamNumbers) {
+            Write-Progress -Activity "Deploying VMs (0/$($taskTab.Count))" -PercentComplete 0
             $VMFolder = Get-Folder -Name ($ISTS_TeamFolderTemplate.Replace("`$TeamNumber", $TeamNumber))
             $ResourcePool = Get-ResourcePool -Name ($ISTS_TeamResourcePoolTemplate.Replace("`$TeamNumber", $TeamNumber))
             $NetworkName = $ISTS_TeamNetworkTemplate.Replace("`$NetworkID", $_.NetworkID).Replace("`$TeamNumber", $TeamNumber)
             $VMName = $_.TemplateName + "-$TeamNumber"
-
-            if (!$NetAdaptersOnly){
-                if ($Template.GetType().fullname -like "*TemplateImpl"){
-                    Write-Host "found a template"
-                } elseif ($Template.getType().fullname -like "*VirtualMachineImpl") {
-                    $VM = New-VM -VM $Template -Name $VMName -Location $VMFolder -ResourcePool $ResourcePool -RunAsync:$RunAsync
-                } else { continue }
+            $ID = $null
+            try {
+                if (!$NetAdaptersOnly){
+                    if ($Template.GetType().fullname -like "*TemplateImpl"){
+                        $ID = (New-VM -Template $Template -Name $VMName -Location $VMFolder -ResourcePool $ResourcePool -RunAsync).Id
+                        $taskTab[$ID] = $VMName
+                    } elseif ($Template.getType().fullname -like "*VirtualMachineImpl") {
+                        $ID = (New-VM -VM $Template -Name $VMName -Location $VMFolder -ResourcePool $ResourcePool -RunAsync).Id
+                        $taskTab[$ID] = $VMName
+                    } else { continue }
+                }
+            } catch {
+                if ($ID -ne $null){
+                    $taskTab.Remove($ID)
+                }
+                continue
             }
-            Get-VM -Name $VMName | Where {$_.Folder -eq $VMFolder} | Get-NetworkAdapter | Set-NetworkAdapter -NetworkName $NetworkName -Confirm:$false
+            Write-Host -ForegroundColor Yellow "Deploying $VMName to $($VMFolder.Name)"
+            $nameNetwork[$VMName] = $NetworkName
+        } 
+    }
+
+    # adapted from http://www.lucd.info/2010/02/21/about-async-tasks-the-get-task-cmdlet-and-a-hash-table/
+    if ($RunAsync){
+        # Set netadapter on each completed VM
+        $runningTasks = $taskTab.Count
+        $initialTasks = $runningTasks
+        while($runningTasks -gt 0){
+            Get-Task | % {
+                if($taskTab.ContainsKey($_.Id) -and $_.State -eq "Success"){
+                    $VM = Get-VM $taskTab[$_.Id]
+                    $percent = 100*($initialTasks-$runningTasks)/$initialTasks
+                    $activity = "Deploying VMs ($($initialTasks-$runningTasks)/$initialTasks)"
+                    $status = "Configuring $($VM.Name)"
+                    Write-Progress $activity -PercentComplete $percent -Status $status -CurrentOperation "Setting network adapter"
+                    Get-NetworkAdapter -VM $VM | Set-NetworkAdapter -NetworkName $nameNetwork[$taskTab[$_.Id]] -Confirm:$false
+                    if ($TakeBaseSnapshot){
+                        Write-Progress $activity -PercentComplete $percent -Status $status -CurrentOperation "Taking base snapshot"
+                        New-Snapshot -Name "base" -Confirm:$false -VM $VM
+                    }
+                    if ($StartOnCompletion){
+                        Write-Progress $activity -PercentComplete $percent -Status $status -CurrentOperation "Starting VM"
+                        Start-VM -VM $VM
+                    }
+                    Write-Host -ForegroundColor Green "Finished deploying $($VM.Name)"
+                    $taskTab.Remove($_.Id)
+                    $runningTasks--
+                }
+                elseif($taskTab.ContainsKey($_.Id) -and $_.State -eq "Error"){
+                    Write-Host -ForegroundColor Red "Error deploying $($taskTab[$_.Id])"
+                    $taskTab.Remove($_.Id)
+                    $runningTasks--
+                }
+            }
+            Write-Progress "Deploying VMs ($($initialTasks-$runningTasks)/$initialTasks)" -PercentComplete (100*($initialTasks-$runningTasks)/$initialTasks) -Status "Deploying"
+            Start-Sleep -Seconds 2
         }
     }
 }

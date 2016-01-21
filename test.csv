@@ -1,0 +1,3 @@
+TemplateName,NetworkID,GuestUser,GuestPassword,Extra
+Template-Debian-7,A,,,domainjoined
+Template-Debian-8,A,,,
