@@ -153,40 +153,38 @@ function Start-ISTSDeployFromCSV {
     }
 
     # adapted from http://www.lucd.info/2010/02/21/about-async-tasks-the-get-task-cmdlet-and-a-hash-table/
-    if ($RunAsync){
-        # Set netadapter on each completed VM
-        $runningTasks = $taskTab.Count
-        $initialTasks = $runningTasks
-        while($runningTasks -gt 0){
-            Get-Task | % {
-                if($taskTab.ContainsKey($_.Id) -and $_.State -eq "Success"){
-                    $VM = Get-VM $taskTab[$_.Id]
-                    $percent = 100*($initialTasks-$runningTasks)/$initialTasks
-                    $activity = "Deploying VMs ($($initialTasks-$runningTasks)/$initialTasks)"
-                    $status = "Configuring $($VM.Name)"
-                    Write-Progress $activity -PercentComplete $percent -Status $status -CurrentOperation "Setting network adapter"
-                    Get-NetworkAdapter -VM $VM | Set-NetworkAdapter -NetworkName $nameNetwork[$taskTab[$_.Id]] -Confirm:$false
-                    if ($TakeBaseSnapshot){
-                        Write-Progress $activity -PercentComplete $percent -Status $status -CurrentOperation "Taking base snapshot"
-                        New-Snapshot -Name "base" -Confirm:$false -VM $VM
-                    }
-                    if ($StartOnCompletion){
-                        Write-Progress $activity -PercentComplete $percent -Status $status -CurrentOperation "Starting VM"
-                        Start-VM -VM $VM
-                    }
-                    Write-Host -ForegroundColor Green "Finished deploying $($VM.Name)"
-                    $taskTab.Remove($_.Id)
-                    $runningTasks--
+    # Set netadapter on each completed VM
+    $runningTasks = $taskTab.Count
+    $initialTasks = $runningTasks
+    while($runningTasks -gt 0){
+        Get-Task | % {
+            if($taskTab.ContainsKey($_.Id) -and $_.State -eq "Success"){
+                $VM = Get-VM $taskTab[$_.Id]
+                $percent = 100*($initialTasks-$runningTasks)/$initialTasks
+                $activity = "Deploying VMs ($($initialTasks-$runningTasks)/$initialTasks)"
+                $status = "Configuring $($VM.Name)"
+                Write-Progress $activity -PercentComplete $percent -Status $status -CurrentOperation "Setting network adapter"
+                Get-NetworkAdapter -VM $VM | Set-NetworkAdapter -NetworkName $nameNetwork[$taskTab[$_.Id]] -Confirm:$false | Out-Null
+                if ($TakeBaseSnapshot){
+                    Write-Progress $activity -PercentComplete $percent -Status $status -CurrentOperation "Taking base snapshot"
+                    New-Snapshot -Name "base" -Confirm:$false -VM $VM | Out-Null
                 }
-                elseif($taskTab.ContainsKey($_.Id) -and $_.State -eq "Error"){
-                    Write-Host -ForegroundColor Red "Error deploying $($taskTab[$_.Id])"
-                    $taskTab.Remove($_.Id)
-                    $runningTasks--
+                if ($StartOnCompletion){
+                    Write-Progress $activity -PercentComplete $percent -Status $status -CurrentOperation "Starting VM"
+                    Start-VM -VM $VM | Out-Null
                 }
+                Write-Host -ForegroundColor Green "Finished deploying $($VM.Name)"
+                $taskTab.Remove($_.Id)
+                $runningTasks--
             }
-            Write-Progress "Deploying VMs ($($initialTasks-$runningTasks)/$initialTasks)" -PercentComplete (100*($initialTasks-$runningTasks)/$initialTasks) -Status "Deploying"
-            Start-Sleep -Seconds 2
+            elseif($taskTab.ContainsKey($_.Id) -and $_.State -eq "Error"){
+                Write-Host -ForegroundColor Red "Error deploying $($taskTab[$_.Id])"
+                $taskTab.Remove($_.Id)
+                $runningTasks--
+            }
         }
+        Write-Progress "Deploying VMs ($($initialTasks-$runningTasks)/$initialTasks)" -PercentComplete (100*($initialTasks-$runningTasks)/$initialTasks) -Status "Deploying"
+        Start-Sleep -Seconds 2
     }
 }
 
