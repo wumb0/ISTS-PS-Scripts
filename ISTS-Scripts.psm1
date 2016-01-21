@@ -103,5 +103,42 @@ function Invoke-JoinLinuxHostsToDomain {
     }
 }
 
+function Start-ISTSDeployFromCSV {
+    param (
+        [Parameter(Mandatory=$true)][string]$filename,
+        [switch]$RunAsync = $false,
+        [switch]$NetAdaptersOnly = $false,
+        [int[]]$TeamNumbers
+    )
+    Import-Csv $filename | % {
+        $Template = $null
+        $Template = Get-Template -Name $_.TemplateName -ErrorAction SilentlyContinue
+
+        if ($Template -eq $null){
+            $Template = Get-VM -Name $_.TemplateName -ErrorAction SilentlyContinue
+        }
+
+        if ($Template -is [System.Array]){
+            $Template = $Template[0]
+        }
+
+        foreach ($TeamNumber in $TeamNumbers) {
+            $VMFolder = Get-Folder -Name ($ISTS_TeamFolderTemplate.Replace("`$TeamNumber", $TeamNumber))
+            $ResourcePool = Get-ResourcePool -Name ($ISTS_TeamResourcePoolTemplate.Replace("`$TeamNumber", $TeamNumber))
+            $NetworkName = $ISTS_TeamNetworkTemplate.Replace("`$NetworkID", $_.NetworkID).Replace("`$TeamNumber", $TeamNumber)
+            $VMName = $_.TemplateName + "-$TeamNumber"
+
+            if (!$NetAdaptersOnly){
+                if ($Template.GetType().fullname -like "*TemplateImpl"){
+                    Write-Host "found a template"
+                } elseif ($Template.getType().fullname -like "*VirtualMachineImpl") {
+                    $VM = New-VM -VM $Template -Name $VMName -Location $VMFolder -ResourcePool $ResourcePool -RunAsync:$RunAsync
+                } else { continue }
+            }
+            Get-VM -Name $VMName | Where {$_.Folder -eq $VMFolder} | Get-NetworkAdapter | Set-NetworkAdapter -NetworkName $NetworkName -Confirm:$false
+        }
+    }
+}
+
 #### Initial config and startup ####
 Import-ISTSConfig $ISTS_ModulePath\ISTS-Scripts.conf
