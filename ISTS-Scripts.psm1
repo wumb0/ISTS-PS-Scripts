@@ -20,6 +20,16 @@ function Connect-ISTSVCenter {
     }
 }
 
+function Get-VCenterConnectionStatus {
+    try {
+        $server = (Get-VIAccount -ErrorAction SilentlyContinue)[0].Server.Name
+        return $true
+    } catch { 
+        Write-Error "The vCenter Server is NOT connected, run Connect-ISTSVCenter to connect"
+        return $false
+    }
+}
+
 function Import-ISTSConfig {
     param (
         [string]$ConfigFile
@@ -43,7 +53,7 @@ function Invoke-DeployISTSDomainController {
         [String]$GuestPassword = "Student1",
         [switch]$RunAsync = $false
     )
-
+    if (!(Get-VCenterConnectionStatus)) { return }
     process {
         foreach ($V in $VM){
             Copy-VMGuestFile -Source $ISTS_ModulePath\resource\Deploy-ISTSDomainController.ps1 -Destination C:\Windows\Temp -VM $V -GuestUser $GuestUser -GuestPassword $GuestPassword -LocalToGuest -Confirm:$false -Force
@@ -59,6 +69,7 @@ function Install-PBIS {
         [Parameter(Mandatory=$true)][String]$OSString,
         [Parameter(Mandatory=$true)][VMware.VimAutomation.ViCore.Impl.V1.Inventory.VirtualMachineImpl]$VM
     )
+    if (!(Get-VCenterConnectionStatus)) { return }
     Write-Host "Trying to match $($VM.Name)"
     if ($OSString -imatch "ubuntu" -or $OSString -imatch "debian"){
         Write-Host "Matched Debian/Ubuntu"
@@ -92,6 +103,7 @@ function Invoke-JoinLinuxHostsToDomain {
         [String]$DNSServerIP = "172.20.15.38", #change this later, maybe make global
         [switch]$RunAsync = $false
     )
+    if (!(Get-VCenterConnectionStatus)) { return }
     process {
         foreach ($V in $VM){
             $OSString = (Invoke-VMScript -ScriptText "uname -a;cat /etc/issue" -GuestUser $GuestUser -GuestPassword $GuestPassword -VM $V).ScriptOutput
@@ -110,6 +122,7 @@ function Start-ISTSDeployFromCSV {
         [switch]$StartOnCompletion = $false,
         [switch]$TakeBaseSnapshot = [bool]$ISTS_TakeBaseSnapshot
     )
+    if (!(Get-VCenterConnectionStatus)) { return }
     $taskTab = @{}
     $nameNetwork = @{}
     Import-Csv $filename | % {
@@ -187,6 +200,65 @@ function Start-ISTSDeployFromCSV {
         Start-Sleep -Seconds 2
     }
 }
+
+function Add-ISTSVMFolders {
+    param (
+        [Parameter(Mandatory=$true)][int[]]$TeamNumbers,
+        [Parameter(ValueFromPipeline=$true)][VMware.VimAutomation.ViCore.Impl.V1.Inventory.FolderImpl]$ParentFolder
+    )
+    if (!(Get-VCenterConnectionStatus)) { return }
+    if (!$ParentFolder){
+        $message = "No parent folder specified. Create folders in the root of the first datacenter ($((Get-Datacenter)[0]))?"
+        $yes = New-Object System.Management.Automation.Host.ChoiceDescription "&Yes", "Continues"
+        $no = New-Object System.Management.Automation.Host.ChoiceDescription "&No", "Exits"
+        $options = [System.Management.Automation.Host.ChoiceDescription[]]($yes, $no)
+        $result = $host.ui.PromptForChoice("Continue?", $message, $options, 0) 
+        switch ($result) {
+            0 { Write-Host "Continuing" }
+            1 { Write-Host -ForegroundColor Red "Aborting."; return }
+        }
+    }
+    $TeamNumbers | % {
+        $fname = $ISTS_TeamFolderTemplate.Replace("`$TeamNumber", $_)
+        $topdcfolder = get-view (get-view -ViewType datacenter -Filter @{"name"=(Get-Datacenter)[0].Name}).VmFolder
+        Write-Host "Creating folder $fname"
+        if ($ParentFolder){
+            New-Folder -Name $fname -Location $ParentFolder | Out-Null
+        } else {
+            $topdcfolder.CreateFolder($fname) | Out-Null
+        }
+    }
+}
+
+function Add-ISTSResourcePools {
+    param (
+        [Parameter(Mandatory=$true)][int[]]$TeamNumbers,
+        [Parameter(ValueFromPipeline=$true)][VMware.VimAutomation.ViCore.Impl.V1.Inventory.ResourcePoolImpl]$ParentPool
+    )
+    if (!(Get-VCenterConnectionStatus)) { return }
+    if (!$ParentPool){
+        $message = "No parent resource pool specified. Create resource pools in the root of the first cluster ($((Get-Cluster)[0]))?"
+        $yes = New-Object System.Management.Automation.Host.ChoiceDescription "&Yes", "Continues"
+        $no = New-Object System.Management.Automation.Host.ChoiceDescription "&No", "Exits"
+        $options = [System.Management.Automation.Host.ChoiceDescription[]]($yes, $no)
+        $result = $host.ui.PromptForChoice("Continue?", $message, $options, 0) 
+        switch ($result) {
+            0 { Write-Host "Continuing" }
+            1 { Write-Host -ForegroundColor Red "Aborting."; return }
+        }
+    }
+    $TeamNumbers | % {
+        $pname = $ISTS_TeamResourcePoolTemplate.Replace("`$TeamNumber", $_)
+        Write-Host "Creating pool $pname"
+        if ($ParentPool){
+            New-ResourcePool -Name $pname -Location $ParentPool | Out-Null
+        } else {
+            New-ResourcePool -Name $pname -Location (Get-Cluster)[0] | Out-Null
+        }
+    }
+}
+
+
 
 #### Initial config and startup ####
 Import-ISTSConfig $ISTS_ModulePath\ISTS-Scripts.conf
