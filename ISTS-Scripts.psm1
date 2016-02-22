@@ -49,16 +49,16 @@ function Invoke-DeployISTSDomainController {
     param ( 
         [Parameter(Mandatory=$true)][int]$TeamNumber,
         [Parameter(Mandatory=$true,ValueFromPipeline=$true)][VMware.VimAutomation.ViCore.Impl.V1.Inventory.VirtualMachineImpl]$VM,
-        [String]$GuestUser = "Administrator",
-        [String]$GuestPassword = "Student1",
+        [String]$GuestUser = $ISTS_DomainAdminUser,
+        [String]$GuestPassword = $ISTS_DomainAdminPassword,
         [switch]$RunAsync = $false
     )
     if (!(Get-VCenterConnectionStatus)) { return }
     process {
         foreach ($V in $VM){
             Copy-VMGuestFile -Source $ISTS_ModulePath\resource\Deploy-ISTSDomainController.ps1 -Destination C:\Windows\Temp -VM $V -GuestUser $GuestUser -GuestPassword $GuestPassword -LocalToGuest -Confirm:$false -Force
-            $DomainName = "$ISTS_BottomLevelDomainNamePrefix$TeamNumber.$ISTS_DomainNameSuffix"
-            $NetBiosName = "$ISTS_NetBiosName$TeamNumber".ToUpper()
+            $DomainName = $ISTS_DomainNameTemplate.replace("`$TeamNumber", $TeamNumber).ToUpper()
+            $NetBiosName = $ISTS_NetBiosNameTemplate.replace("`$TeamNumber", $TeamNumber).ToUpper()
             Invoke-VMScript -ScriptText "\Windows\Temp\Deploy-ISTSDomainController.ps1 -DomainName $DomainName -NetBiosName $NetBiosName -InstallRoles; Remove-Item -Path \Windows\Temp\Deploy-ISTSDomainController.ps1" -VM $V -RunAsync:$RunAsync -Confirm:$false -GuestUser $GuestUser -GuestPassword $GuestPassword
         }
     }
@@ -88,7 +88,7 @@ function Install-PBIS {
         Invoke-WebRequest $URL -OutFile $ISTS_ModulePath\data\$Filename
     }
     Copy-VMGuestFile -Source $ISTS_ModulePath\data\$Filename -Destination /tmp -LocalToGuest -VM $VM -GuestUser $GuestUser -GuestPassword $GuestPassword
-    Invoke-VMScript -ScriptText "chmod +x /tmp/$Filename;/tmp/$Filename -- --dont-join --no-legacy install;rm /tmp/$Filename" -GuestUser $GuestUser -GuestPassword $GuestPassword -VM $VM
+    Invoke-VMScript -ScriptText "chmod +x /tmp/$Filename;/tmp/$Filename -- --dont-join --no-legacy install;rm /tmp/$Filename" -GuestUser $GuestUser -GuestPassword $GuestPassword -VM $VM -Confirm:$false
     return $true
 }
 
@@ -96,11 +96,11 @@ function Invoke-JoinLinuxHostsToDomain {
     param (
         [Parameter(Mandatory=$true)][int]$TeamNumber,
         [Parameter(Mandatory=$true,ValueFromPipeline=$true)][VMware.VimAutomation.ViCore.Impl.V1.Inventory.VirtualMachineImpl]$VM,
-        [String]$GuestUser = "root",
-        [String]$GuestPassword = "student",
-        [String]$DomainAdminUser = "Administrator",
-        [String]$DomainAdminPassword = "Student1!",
-        [String]$DNSServerIP = "172.20.15.38", #change this later, maybe make global
+        [String]$GuestUser = $ISTS_LinuxDefaultUser,
+        [String]$GuestPassword = $ISTS_LinuxDefaultPassword,
+        [String]$DomainAdminUser = $ISTS_DomainAdminUser,
+        [String]$DomainAdminPassword = $ISTS_DomainAdminPassword,
+        [String]$DNSServerIP = $ISTS_DomainControllerIPTemplate.replace("`$TeamNumber", $TeamNumber),
         [switch]$RunAsync = $false
     )
     if (!(Get-VCenterConnectionStatus)) { return }
@@ -108,9 +108,30 @@ function Invoke-JoinLinuxHostsToDomain {
         foreach ($V in $VM){
             $OSString = (Invoke-VMScript -ScriptText "uname -a;cat /etc/issue" -GuestUser $GuestUser -GuestPassword $GuestPassword -VM $V).ScriptOutput
             if (Install-PBIS -OSString $OSString -VM $V){
-                $domain = "$ISTS_BottomLevelDomainNamePrefix$TeamNumber.$ISTS_DomainNameSuffix".ToUpper()
-                Invoke-VMScript -ScriptText "echo nameserver $DNSServerIP > /etc/resolv.conf; /opt/pbis/bin/domainjoin-cli join $domain $DomainAdminUser $DomainAdminPassword" -VM $V -GuestUser $GuestUser -GuestPassword $GuestPassword
+                $domain = $ISTS_DomainNameTemplate.replace("`$TeamNumber", $TeamNumber).ToUpper()
+                Invoke-VMScript -ScriptText "echo nameserver $DNSServerIP > /etc/resolv.conf; /opt/pbis/bin/domainjoin-cli join $domain $DomainAdminUser $DomainAdminPassword" -VM $V -GuestUser $GuestUser -GuestPassword $GuestPassword -RunAsync:$RunAsync -Confirm:$false
             }
+        }
+    }
+}
+
+function Add-WindowsHostsToDomain{
+    param (
+        [Parameter(Mandatory=$true)][int]$TeamNumber,
+        [Parameter(Mandatory=$true,ValueFromPipeline=$true)][VMware.VimAutomation.ViCore.Impl.V1.Inventory.VirtualMachineImpl]$VM,
+        [String]$GuestUser = $ISTS_WindowsDefaultUser,
+        [String]$GuestPassword = $ISTS_WindowsDefaultPassword,
+        [String]$DomainAdminUser = $ISTS_DomainAdminUser,
+        [String]$DomainAdminPassword = $ISTS_DomainAdminPassword,
+        [String]$DNSServerIP = $ISTS_DomainControllerIPTemplate.replace("`$TeamNumber", $TeamNumber),
+        [switch]$RunAsync = $false
+    )
+    if (!(Get-VCenterConnectionStatus)) { return }
+    $domain = $ISTS_DomainNameTemplate.replace("`$TeamNumber", $TeamNumber)
+    process {
+        foreach ($V in $VM){
+            Invoke-VMScript -ScriptText "Set-DnsClientServerAddress -ServerAddress $DNSServerIP -InterfaceAlias ((Get-NetAdapter | Where {`$_.Name -Like '*Ethernet*' -or `$_.Name -Like '*Local Area Connection*'})[0])" -VM $V -GuestUser $GuestUser -GuestPassword $GuestPassword -RunAsync:$RunAsync -Confirm:$false
+            Invoke-VMScript -ScriptText "Add-Computer -DomainName $domain -Credential (New-Object System.Management.Automation.PSCredential($DomainAdminUser,$DomainAdminPassword))" -VM $V -GuestUser $GuestUser -GuestPassword $GuestPassword -RunAsync:$RunAsync -Confirm:$false
         }
     }
 }
@@ -209,13 +230,8 @@ function Add-ISTSVMFolders {
     if (!(Get-VCenterConnectionStatus)) { return }
     if (!$ParentFolder){
         $message = "No parent folder specified. Create folders in the root of the first datacenter ($((Get-Datacenter)[0]))?"
-        $yes = New-Object System.Management.Automation.Host.ChoiceDescription "&Yes", "Continues"
-        $no = New-Object System.Management.Automation.Host.ChoiceDescription "&No", "Exits"
-        $options = [System.Management.Automation.Host.ChoiceDescription[]]($yes, $no)
-        $result = $host.ui.PromptForChoice("Continue?", $message, $options, 0) 
-        switch ($result) {
-            0 { Write-Host "Continuing" }
-            1 { Write-Host -ForegroundColor Red "Aborting."; return }
+        if (!(Invoke-ConfirmPrompt -Message $message)){
+            return
         }
     }
     $TeamNumbers | % {
@@ -237,14 +253,8 @@ function Add-ISTSResourcePools {
     )
     if (!(Get-VCenterConnectionStatus)) { return }
     if (!$ParentPool){
-        $message = "No parent resource pool specified. Create resource pools in the root of the first cluster ($((Get-Cluster)[0]))?"
-        $yes = New-Object System.Management.Automation.Host.ChoiceDescription "&Yes", "Continues"
-        $no = New-Object System.Management.Automation.Host.ChoiceDescription "&No", "Exits"
-        $options = [System.Management.Automation.Host.ChoiceDescription[]]($yes, $no)
-        $result = $host.ui.PromptForChoice("Continue?", $message, $options, 0) 
-        switch ($result) {
-            0 { Write-Host "Continuing" }
-            1 { Write-Host -ForegroundColor Red "Aborting."; return }
+        if (!(Invoke-ConfirmPrompt -Message "No parent resource pool specified. Create resource pools in the root of the first cluster ($((Get-Cluster)[0]))?")){
+            return
         }
     }
     $TeamNumbers | % {
@@ -258,7 +268,25 @@ function Add-ISTSResourcePools {
     }
 }
 
-
+function Invoke-ConfirmPrompt {
+    param(
+        [string]$Title = "Continue?",
+        [string]$Message = "",
+        [string]$YesPrompt = "Continue",
+        [string]$NoPrompt = "Exit",
+        [string]$OnYes = "Continuing",
+        [string]$OnNo = "Aborting"
+    )
+   
+    $yes = New-Object System.Management.Automation.Host.ChoiceDescription "&Yes", $YesPrompt
+    $no = New-Object System.Management.Automation.Host.ChoiceDescription "&No", $NoPrompt
+    $options = [System.Management.Automation.Host.ChoiceDescription[]]($yes, $no)
+    $result = $host.ui.PromptForChoice($Title, $Message, $options, 0) 
+    switch ($result) {
+        0 { Write-Host $OnYes; return $true }
+        1 { Write-Host -ForegroundColor Red $OnNo; return $false }
+    }
+}
 
 #### Initial config and startup ####
 Import-ISTSConfig $ISTS_ModulePath\ISTS-Scripts.conf
