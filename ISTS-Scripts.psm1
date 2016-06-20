@@ -16,11 +16,12 @@ if ( (Get-Module -Name VMware.VimAutomation.Vds -ErrorAction SilentlyContinue) -
 # Get the path the module is running in
 $ISTS_ModulePath = Split-Path -parent $PSCommandPath
 
-<# Name: Connect-ISTSVCenter
+<# Name:        Connect-ISTSVCenter
  # Description: Connects to vcenter from config or prompt
- # Params:
- # Returns: 
- # Note: creds from the config file are stored as plaintext in memory! Be careful! 
+ # Params:      None
+ # Returns:     None
+ # Throws:      Error if already connected
+ # Note:        Creds from the config file are stored as plaintext in memory! Be careful! 
  #>
 function Connect-ISTSVCenter {
     try { #make sure we aren't already connected
@@ -36,10 +37,11 @@ function Connect-ISTSVCenter {
     }
 }
 
-<# Name: Get-VCenterConnectionStatus
+<# Name:        Get-VCenterConnectionStatus
  # Description: Run a simple test to see if the VCenter server is connected
- # Params:
- # Returns: 
+ # Params:      None
+ # Returns:     $true if vcenter is connected, $false if not
+ # Throws:      Error if check fails
  #>
 function Get-VCenterConnectionStatus {
     try {
@@ -51,6 +53,12 @@ function Get-VCenterConnectionStatus {
     }
 }
 
+<# Name:        Import-ISTSConfig
+ # Description: Sets variables for use in the script (prefixed by ISTS_)
+ # Params:      ConfigFile - The path to the configuration file to load
+ # Returns:     None
+ # Throws:      None
+ #>
 function Import-ISTSConfig {
     param (
         [string]$ConfigFile
@@ -65,7 +73,18 @@ function Import-ISTSConfig {
     }
 }
 
-# Deploys ISTS domain controller
+<# Name:        Invoke-DeployISTSDomainController
+ # Description: Uploads an AD deployment script to the VM's passed in and runs it
+ # Params:      TeamNumber - int,required - The team number to insert
+ #              VM - VirtualMachineImpl,required - the VM to run the script on
+ #              GuestUser - string - Username to use to log into the VM
+ #                                 - Populated by ISTS_DomainAdminUser if blank
+ #              GuestPassword - string - Password to use to log into the VM
+ #                                     - Populated by ISTS_DomainAdminPassword if blank
+ #              RunAsync - bool - Whether to wait between starting each deployment
+ # Returns:     None
+ # Throws:      None
+ #>
 function Invoke-DeployISTSDomainController {
     param ( 
         [Parameter(Mandatory=$true)][int]$TeamNumber,
@@ -87,6 +106,19 @@ function Invoke-DeployISTSDomainController {
     }
 }
 
+<# Name:        Invoke-AddDnsRecordsFromCSV
+ # Description: Takes DNS records from a CSV file and adds them to a Windows Server
+ # Params:      TeamNumber - int,required - The team number to use in the script
+ #              VM - VirtualMachineImpl,required - the VM to run the script on
+ #              GuestUser - string - Username to use to log into the VM
+ #                                 - Populated by ISTS_DomainAdminUser if blank
+ #              GuestPassword - string - Password to use to log into the VM
+ #                                     - Populated by ISTS_DomainAdminPassword if blank
+ #              RunAsync - bool - Whether to wait between starting each deployment
+ # Returns:     None
+ # Throws:      None
+ # Note:        Powershell required on the VM guest
+ #>
 # Adds dns records
 function Invoke-AddDnsRecordsFromCSV {
     param ( 
@@ -103,6 +135,14 @@ function Invoke-AddDnsRecordsFromCSV {
     Invoke-VMScript -ScriptText "\Windows\Temp\Add-DnsRecordsFromCSV.ps1 -TeamNumber $TeamNumber -FileName \Windows\Temp\$FileName; Remove-Item -Path \Windows\Temp\Add-DnsRecordsFromCSV.ps1;Remove-Item -Path \Windows\Temp\$FileName" -VM $VM -RunAsync:$RunAsync -Confirm:$false -GuestUser $GuestUser -GuestPassword $GuestPassword
 }
 
+<# Name:        Install-PBIS
+ # Description: Installs PBIS on a linux host
+ # Params:      OSString - string,required - Info that could help identify the OS
+ #              VM - VirtualMachineImpl,required - the VM to install PBIS on
+ # Returns:     $true if install succeeded, $false if not
+ # Throws:      None
+ # Note:        This will download PBIS from the link in the imported ISTS-Config
+ #>
 function Install-PBIS {
     param (
         [Parameter(Mandatory=$true)][String]$OSString,
@@ -131,6 +171,23 @@ function Install-PBIS {
     return $true
 }
 
+<# Name:        Invoke-JoinLinuxHostsToDomain
+ # Description: Gathers linux system info and invokes Install-PBIS on hosts
+ # Params:      TeamNumber - int,required - The team number that is being joined
+ #              VM - VirtualMachineImpl,required - The VM's join to the domain
+ #              GuestUser - string - Username to use to log into the VM
+ #                                 - Populated by ISTS_LinuxDefaultUser if blank
+ #              GuestPassword - string - Password to use to log into the VM
+ #                                     - Populated by ISTS_LinuxDefaultPassword if blank
+ #              DomainAdminUser - string - Domain admin user name to use to join the domain
+ #              DomainAdminPassword - string - Domain admin user password to use to join the domain
+ #              DNSServerIP - string - The IP address of the DNS server for the team
+ #              RunAsync - bool - Whether to run the joins asynchronously
+ # Returns:     None
+ # Throws:      None
+ # Note:        Can process multiple VMs at once via pipe
+ # Note:        If you want to set the DNS server statically then just assign the var, it won't be changed
+ #>
 function Invoke-JoinLinuxHostsToDomain {
     param (
         [Parameter(Mandatory=$true)][int]$TeamNumber,
@@ -156,6 +213,23 @@ function Invoke-JoinLinuxHostsToDomain {
     }
 }
 
+<# Name:        Add-WindowsHostsToDomain
+ # Description: Joins windows hosts to an AD domain
+ # Params:      TeamNumber - int,required - The team number that is being joined
+ #              VM - VirtualMachineImpl,required - The VM's join to the domain
+ #              GuestUser - string - Username to use to log into the VM
+ #                                 - Populated by ISTS_WindowsDefaultUser if blank
+ #              GuestPassword - string - Password to use to log into the VM
+ #                                     - Populated by ISTS_WindowsDefaultPassword if blank
+ #              DomainAdminUser - string - Domain admin user name to use to join the domain
+ #              DomainAdminPassword - string - Domain admin user password to use to join the domain
+ #              DNSServerIP - string - The IP address of the DNS server for the team
+ #              RunAsync - bool - Whether to run the joins asynchronously
+ # Returns:     None
+ # Throws:      None
+ # Note:        Can process multiple VMs at once via pipe
+ # Note:        If you want to set the DNS server statically then just assign the var, it won't be changed
+ #>
 function Add-WindowsHostsToDomain{
     param (
         [Parameter(Mandatory=$true)][int]$TeamNumber,
@@ -180,17 +254,27 @@ function Add-WindowsHostsToDomain{
     }
 }
 
+<# Name:        Start-ISTSDeployFromCSV
+ # Description: Programatically clones, configures, snapshots, and starts VMs in parallel
+ # Params:      FileName - string,required - The CSV file name to deploy from
+ #              TeamNumbers - int[],required - The teams to deploy to
+ #              StartOnCompletion - bool - Whether to start the VM when the process is finished
+ #              TakeBaseSnapshot - bool - Whether to take a base snapshot of the VM when the process is finished
+ # Returns:     None
+ # Throws:      None
+ # Note:        If you don't want this script to deploy networks then provide a bogus network name
+ #>
 function Start-ISTSDeployFromCSV {
     param (
-        [Parameter(Mandatory=$true)][string]$filename,
+        [Parameter(Mandatory=$true)][string]$FileName,
         [Parameter(Mandatory=$true)][int[]]$TeamNumbers,
-        [switch]$StartOnCompletion = $false,
+        [switch]$StartOnCompletion = [bool]$ISTS_StartOnCompletion,
         [switch]$TakeBaseSnapshot = [bool]$ISTS_TakeBaseSnapshot
     )
     if (!(Get-VCenterConnectionStatus)) { return }
     $taskTab = @{}
     $nameNetwork = @{}
-    Import-Csv $filename | % {
+    Import-Csv $FileName | % {
         $Template = $null
         $Template = Get-Template -Name $_.TemplateName -ErrorAction SilentlyContinue
 
@@ -277,6 +361,14 @@ function Start-ISTSDeployFromCSV {
     }
 }
 
+<# Name:        Add-ISTSVMFolders
+ # Description: Mass adds organizational folders based on team numbers
+ # Params:      TeamNumbers - int[],required - List of team folders to add
+ #              ParentFolder - FolderImpl,required - Folder to place created folders under
+ # Returns:     None
+ # Throws:      None
+ # Note:        Uses ISTS_TeamFolderTemplate to name the folders
+ #>
 function Add-ISTSVMFolders {
     param (
         [Parameter(Mandatory=$true)][int[]]$TeamNumbers,
@@ -301,6 +393,14 @@ function Add-ISTSVMFolders {
     }
 }
 
+<# Name:        Add-ISTSResourcePools
+ # Description: Mass adds resource pools based on team numbers
+ # Params:      TeamNumbers - int[],required - List of team resource pools to add
+ #              ParentPool - ResourcePoolImpl,required - Pool to place created pools under
+ # Returns:     None
+ # Throws:      None
+ # Note:        Uses ISTS_TeamResourcePoolTemplate to name the resource pools
+ #>
 function Add-ISTSResourcePools {
     param (
         [Parameter(Mandatory=$true)][int[]]$TeamNumbers,
@@ -323,6 +423,19 @@ function Add-ISTSResourcePools {
     }
 }
 
+<# Name:        Add-ISTSNetworks
+ # Description: Mass adds networks based on names, team numbers, and VLAN mappings
+ # Params:      TeamNumbers - int[],required - List of teams to add networks for
+ #              NetworkNames - string[],required - List of network names to add
+ #              ParentDVSwitchName - string - Name of the parent DVSwitch
+ #                                          - Gets default from ISTS_ParentDVSwitch
+ #              VlanIDMappings - string - VLAN ID mapping string for users/networks
+ #                                      - Gets default from ISTS_VlanIDMappings
+ # Returns:     None
+ # Throws:      None
+ # Note:        Check out how VlanIDMappings are set up in the example config
+ # Note:        Uses ISTS_TeamNetworkTemplate from the config to name networks
+ #>
 function Add-ISTSNetworks {
     param (
         [Parameter(Mandatory=$true)][int[]]$TeamNumbers,
@@ -341,6 +454,17 @@ function Add-ISTSNetworks {
 
 }
 
+<# Name:        Invoke-ConfirmPrompt
+ # Description: Creates a prompt for the user
+ # Params:      Title - string - The title of the prompt
+ #              Message - string - The prompt message/question
+ #              YesPrompt - string - What to display next to the yes option
+ #              NoPrompt - string - What to display next to the no option
+ #              OnYes - string - What to print if the user says yes
+ #              OnNo - string - What to print if the user says no
+ # Returns:     $true if the user answers with yes, $false if no
+ # Throws:      None
+ #>
 function Invoke-ConfirmPrompt {
     param(
         [string]$Title = "Continue?",
