@@ -1,0 +1,17 @@
+Type,Address,Name
+A,10.2.X.30,mail.teamX.ists
+MX,10.2.X.30,mail.teamX.ists
+A,10.3.X.40,www.teamX.ists
+A,10.2.X.10,esxi.corp.teamX.ists
+A,10.2.X.20,ad.corp.teamX.ists
+A,10.2.X.30,mail.corp.teamX.ists
+A,10.2.X.40,asterisk.corp.teamX.ists
+A,10.2.X.50,build.corp.teamX.ists
+A,10.2.X.60,helpdesk.corp.teamX.ists
+A,10.2.X.100,win10.corp.teamX.ists
+A,10.2.X.110,kali1.corp.teamX.ists
+A,10.2.X.120,kali2.corp.teamX.ists
+A,10.3.X.1,firewall.prod.teamX.ists
+A,10.3.X.10,webserv.prod.teamX.ists
+A,10.3.X.40,www.prod.teamX.ists
+A,10.3.X.50,win7.prod.teamX.ists
