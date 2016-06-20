@@ -1,11 +1,27 @@
-﻿if ( (Get-PSSnapin -Name VMware.VimAutomation.Core -ErrorAction SilentlyContinue) -eq $null ){
-    Write-Error "Make sure vmware.vimautomation.core is added. Import in PowerCLI shell or just Add-PSSnapin"
+﻿#Requires -Version 4.0
+<#
+    ISTS-Scripts.psm1 - powercli scripts to help with ESXi deployment and team replication
+    It was designed and used for the deployment of the ISTS14 (2016) competition at RIT
+#>
+
+# these checks are for modules
+if ( (Get-PSSnapin -Name VMware.VimAutomation.Core -ErrorAction SilentlyContinue) -eq $null ){
+    Write-Error "Make sure vmware.vimautomation.core is added. Import in PowerCLI shell or just Add-PSSnapin VMware.VimAutomation.Core"
+}
+if ( (Get-Module -Name VMware.VimAutomation.Vds -ErrorAction SilentlyContinue) -eq $null ){
+    Write-Warning "Make sure vmware.vimautomation.Vds is added if you want to create networks. Import in PowerCLI shell or just Import-Module VMware.VimAutomation.Vds"
 }
 
-#### Global Variables ####
+
+# Get the path the module is running in
 $ISTS_ModulePath = Split-Path -parent $PSCommandPath
 
-#### Functions ####
+<# Name: Connect-ISTSVCenter
+ # Description: Connects to vcenter from config or prompt
+ # Params:
+ # Returns: 
+ # Note: creds from the config file are stored as plaintext in memory! Be careful! 
+ #>
 function Connect-ISTSVCenter {
     try { #make sure we aren't already connected
         $server = (Get-VIAccount -ErrorAction SilentlyContinue)[0].Server.Name
@@ -20,6 +36,11 @@ function Connect-ISTSVCenter {
     }
 }
 
+<# Name: Get-VCenterConnectionStatus
+ # Description: Run a simple test to see if the VCenter server is connected
+ # Params:
+ # Returns: 
+ #>
 function Get-VCenterConnectionStatus {
     try {
         $server = (Get-VIAccount -ErrorAction SilentlyContinue)[0].Server.Name
@@ -53,7 +74,9 @@ function Invoke-DeployISTSDomainController {
         [String]$GuestPassword = $ISTS_DomainAdminPassword,
         [switch]$RunAsync = $false
     )
-    if (!(Get-VCenterConnectionStatus)) { return }
+    begin {
+        if (!(Get-VCenterConnectionStatus)) { return }
+    }
     process {
         foreach ($V in $VM){
             Copy-VMGuestFile -Source $ISTS_ModulePath\resource\Deploy-ISTSDomainController.ps1 -Destination C:\Windows\Temp -VM $V -GuestUser $GuestUser -GuestPassword $GuestPassword -LocalToGuest -Confirm:$false -Force
@@ -62,6 +85,22 @@ function Invoke-DeployISTSDomainController {
             Invoke-VMScript -ScriptText "\Windows\Temp\Deploy-ISTSDomainController.ps1 -DomainName $DomainName -NetBiosName $NetBiosName -InstallRoles; Remove-Item -Path \Windows\Temp\Deploy-ISTSDomainController.ps1" -VM $V -RunAsync:$RunAsync -Confirm:$false -GuestUser $GuestUser -GuestPassword $GuestPassword
         }
     }
+}
+
+# Adds dns records
+function Invoke-AddDnsRecordsFromCSV {
+    param ( 
+        [Parameter(Mandatory=$true)][int]$TeamNumber,
+        [Parameter(Mandatory=$true)][VMware.VimAutomation.ViCore.Impl.V1.Inventory.VirtualMachineImpl]$VM,
+        [Parameter(Mandatory=$true)]$FileName,
+        [String]$GuestUser = $ISTS_DomainAdminUser,
+        [String]$GuestPassword = $ISTS_DomainAdminPassword,
+        [switch]$RunAsync = $false
+    )
+    if (!(Get-VCenterConnectionStatus)) { return }
+    Copy-VMGuestFile -Source $ISTS_ModulePath\resource\Add-DnsRecordsFromCSV.ps1 -Destination C:\Windows\Temp -VM $VM -GuestUser $GuestUser -GuestPassword $GuestPassword -LocalToGuest -Confirm:$false -Force
+    Copy-VMGuestFile -Source $FileName -Destination C:\Windows\Temp -VM $VM -GuestUser $GuestUser -GuestPassword $GuestPassword -LocalToGuest -Confirm:$false -Force
+    Invoke-VMScript -ScriptText "\Windows\Temp\Add-DnsRecordsFromCSV.ps1 -TeamNumber $TeamNumber -FileName \Windows\Temp\$FileName; Remove-Item -Path \Windows\Temp\Add-DnsRecordsFromCSV.ps1;Remove-Item -Path \Windows\Temp\$FileName" -VM $VM -RunAsync:$RunAsync -Confirm:$false -GuestUser $GuestUser -GuestPassword $GuestPassword
 }
 
 function Install-PBIS {
@@ -84,10 +123,10 @@ function Install-PBIS {
 
     $Filename = $URL.Split("/")[-1]
     if (!(Test-Path .\data\$Filename)){
-        New-Item -ItemType Directory -Force -Path $ISTS_ModulePath\data\$Filename
+        New-Item -ItemType Directory -Force -Path $ISTS_ModulePath\data
         Invoke-WebRequest $URL -OutFile $ISTS_ModulePath\data\$Filename
     }
-    Copy-VMGuestFile -Source $ISTS_ModulePath\data\$Filename -Destination /tmp -LocalToGuest -VM $VM -GuestUser $GuestUser -GuestPassword $GuestPassword
+    Copy-VMGuestFile -Source $ISTS_ModulePath\data\$Filename -Destination /tmp -LocalToGuest -VM $VM -GuestUser $GuestUser -GuestPassword $GuestPassword -Force
     Invoke-VMScript -ScriptText "chmod +x /tmp/$Filename;/tmp/$Filename -- --dont-join --no-legacy install;rm /tmp/$Filename" -GuestUser $GuestUser -GuestPassword $GuestPassword -VM $VM -Confirm:$false
     return $true
 }
@@ -103,7 +142,9 @@ function Invoke-JoinLinuxHostsToDomain {
         [String]$DNSServerIP = $ISTS_DomainControllerIPTemplate.replace("`$TeamNumber", $TeamNumber),
         [switch]$RunAsync = $false
     )
-    if (!(Get-VCenterConnectionStatus)) { return }
+    begin {
+        if (!(Get-VCenterConnectionStatus)) { return }
+    }
     process {
         foreach ($V in $VM){
             $OSString = (Invoke-VMScript -ScriptText "uname -a;cat /etc/issue" -GuestUser $GuestUser -GuestPassword $GuestPassword -VM $V).ScriptOutput
@@ -126,12 +167,15 @@ function Add-WindowsHostsToDomain{
         [String]$DNSServerIP = $ISTS_DomainControllerIPTemplate.replace("`$TeamNumber", $TeamNumber),
         [switch]$RunAsync = $false
     )
-    if (!(Get-VCenterConnectionStatus)) { return }
-    $domain = $ISTS_DomainNameTemplate.replace("`$TeamNumber", $TeamNumber)
+    begin {
+        if (!(Get-VCenterConnectionStatus)) { return }
+        $domain = $ISTS_DomainNameTemplate.replace("`$TeamNumber", $TeamNumber)
+    }
     process {
         foreach ($V in $VM){
-            Invoke-VMScript -ScriptText "Set-DnsClientServerAddress -ServerAddress $DNSServerIP -InterfaceAlias ((Get-NetAdapter | Where {`$_.Name -Like '*Ethernet*' -or `$_.Name -Like '*Local Area Connection*'})[0])" -VM $V -GuestUser $GuestUser -GuestPassword $GuestPassword -RunAsync:$RunAsync -Confirm:$false
-            Invoke-VMScript -ScriptText "Add-Computer -DomainName $domain -Credential (New-Object System.Management.Automation.PSCredential($DomainAdminUser,$DomainAdminPassword))" -VM $V -GuestUser $GuestUser -GuestPassword $GuestPassword -RunAsync:$RunAsync -Confirm:$false
+            Invoke-VMScript -ScriptText "netsh int ipv4 set dns 'Local Area Connection' static 10.2.$TeamNumber.20" -VM $V -GuestUser $GuestUser -GuestPassword $GuestPassword -Confirm:$false
+            Invoke-VMScript -ScriptText "Set-DnsClientServerAddress -ServerAddress $DNSServerIP -InterfaceAlias ((Get-NetAdapter | Where {`$_.Name -Like '*Ethernet*' -or `$_.Name -Like '*Local Area Connection*'})[0])" -VM $V -GuestUser $GuestUser -GuestPassword $GuestPassword -Confirm:$false
+            Invoke-VMScript -ScriptText "Add-Computer -DomainName '$domain' -Credential (New-Object System.Management.Automation.PSCredential('$DomainAdminUser@$domain',('$DomainAdminPassword' | ConvertTo-SecureString -asPlainText -Force)))" -VM $V -GuestUser $GuestUser -GuestPassword $GuestPassword -RunAsync:$RunAsync -Confirm:$false
         }
     }
 }
@@ -158,34 +202,45 @@ function Start-ISTSDeployFromCSV {
             $Template = $Template[0]
         }
 
-        foreach ($TeamNumber in $TeamNumbers) {
-            Write-Progress -Activity "Deploying VMs (0/$($taskTab.Count))" -PercentComplete 0
-            $VMFolder = Get-Folder -Name ($ISTS_TeamFolderTemplate.Replace("`$TeamNumber", $TeamNumber))
-            $ResourcePool = Get-ResourcePool -Name ($ISTS_TeamResourcePoolTemplate.Replace("`$TeamNumber", $TeamNumber))
-            $NetworkName = $ISTS_TeamNetworkTemplate.Replace("`$NetworkID", $_.NetworkID).Replace("`$TeamNumber", $TeamNumber)
-            $VMName = $_.TemplateName + "-$TeamNumber"
-            $ID = $null
-            try {
-                if (!$NetAdaptersOnly){
-                    if ($Template.GetType().fullname -like "*TemplateImpl"){
-                        $ID = (New-VM -Template $Template -Name $VMName -Location $VMFolder -ResourcePool $ResourcePool -RunAsync).Id
-                        $taskTab[$ID] = $VMName
-                    } elseif ($Template.getType().fullname -like "*VirtualMachineImpl") {
-                        $ID = (New-VM -VM $Template -Name $VMName -Location $VMFolder -ResourcePool $ResourcePool -RunAsync).Id
-                        $taskTab[$ID] = $VMName
-                    } else { continue }
-                }
-            } catch {
-                if ($ID -ne $null){
-                    $taskTab.Remove($ID)
-                }
-                continue
-            }
-            Write-Host -ForegroundColor Yellow "Deploying $VMName to $($VMFolder.Name)"
-            $nameNetwork[$VMName] = $NetworkName
-        } 
-    }
+        if ($Template -eq $null){
+            Write-Warning "No template named $($_.TemplateName), skipping" 
+        } else {
 
+            foreach ($TeamNumber in $TeamNumbers) {
+                Write-Progress -Activity "Deploying VMs (0/$($taskTab.Count))" -PercentComplete 0
+                $VMFolder = Get-Folder -Name ($ISTS_TeamFolderTemplate.Replace("`$TeamNumber", $TeamNumber))
+                $ResourcePool = Get-ResourcePool -Name ($ISTS_TeamResourcePoolTemplate.Replace("`$TeamNumber", $TeamNumber))
+                $NetworkName = $ISTS_TeamNetworkTemplate.Replace("`$NetworkID", $_.NetworkID).Replace("`$TeamNumber", $TeamNumber)
+                $VMName = $ISTS_TeamVMNameTemplate
+                $tmp = $_.TemplateName
+                $ISTS_TeamVmNameReplace.Split(",") | % { 
+                    if ($tmp.Contains($_)){
+                        $tmp = $tmp.TemplateName.Replace($_, "")
+                    }
+                }
+                $VMName = $VMName.Replace("`$TeamNumber", $TeamNumber).Replace("`$TemplateName", $tmp)
+                $ID = $null
+                try {
+                    if (!$NetAdaptersOnly){
+                        if ($Template.GetType().fullname -like "*TemplateImpl"){
+                            $ID = (New-VM -Template $Template -Name $VMName -Location $VMFolder -ResourcePool $ResourcePool -RunAsync).Id
+                            $taskTab[$ID] = $VMName
+                        } elseif ($Template.getType().fullname -like "*VirtualMachineImpl") {
+                            $ID = (New-VM -VM $Template -Name $VMName -Location $VMFolder -ResourcePool $ResourcePool -RunAsync).Id
+                            $taskTab[$ID] = $VMName
+                        } else { continue }
+                    }
+                } catch {
+                    if ($ID -ne $null){
+                        $taskTab.Remove($ID)
+                    }
+                    continue
+                }
+                Write-Host -ForegroundColor Yellow "Deploying $VMName to $($VMFolder.Name)"
+                $nameNetwork[$VMName] = $NetworkName
+            } 
+        }
+    }
     # adapted from http://www.lucd.info/2010/02/21/about-async-tasks-the-get-task-cmdlet-and-a-hash-table/
     # Set netadapter on each completed VM
     $runningTasks = $taskTab.Count
@@ -198,14 +253,14 @@ function Start-ISTSDeployFromCSV {
                 $activity = "Deploying VMs ($($initialTasks-$runningTasks)/$initialTasks)"
                 $status = "Configuring $($VM.Name)"
                 Write-Progress $activity -PercentComplete $percent -Status $status -CurrentOperation "Setting network adapter"
-                Get-NetworkAdapter -VM $VM | Set-NetworkAdapter -NetworkName $nameNetwork[$taskTab[$_.Id]] -Confirm:$false | Out-Null
+                Get-NetworkAdapter -VM $VM | Set-NetworkAdapter -NetworkName $nameNetwork[$taskTab[$_.Id]] -Confirm:$false -RunAsync:(!$TakeBaseSnapshot) | Out-Null
                 if ($TakeBaseSnapshot){
                     Write-Progress $activity -PercentComplete $percent -Status $status -CurrentOperation "Taking base snapshot"
                     New-Snapshot -Name "base" -Confirm:$false -VM $VM | Out-Null
                 }
                 if ($StartOnCompletion){
                     Write-Progress $activity -PercentComplete $percent -Status $status -CurrentOperation "Starting VM"
-                    Start-VM -VM $VM | Out-Null
+                    Start-VM -VM $VM -RunAsync | Out-Null
                 }
                 Write-Host -ForegroundColor Green "Finished deploying $($VM.Name)"
                 $taskTab.Remove($_.Id)
@@ -218,7 +273,7 @@ function Start-ISTSDeployFromCSV {
             }
         }
         Write-Progress "Deploying VMs ($($initialTasks-$runningTasks)/$initialTasks)" -PercentComplete (100*($initialTasks-$runningTasks)/$initialTasks) -Status "Deploying"
-        Start-Sleep -Seconds 2
+        Start-Sleep -Seconds 1
     }
 }
 
@@ -266,6 +321,24 @@ function Add-ISTSResourcePools {
             New-ResourcePool -Name $pname -Location (Get-Cluster)[0] | Out-Null
         }
     }
+}
+
+function Add-ISTSNetworks {
+    param (
+        [Parameter(Mandatory=$true)][int[]]$TeamNumbers,
+        [Parameter(Mandatory=$true)][string[]]$NetworkNames,
+        [string]$ParentDVSwitchName = $ISTS_ParentDVSwitchName,
+        [string]$VlanIDMappings = $ISTS_VlanIDMappings
+    )
+    $VDSwitch = Get-VDSwitch -Name $ParentDVSwitchName -ErrorAction Stop
+    foreach ($Team in $TeamNumbers){
+        foreach ($NetID in $NetworkNames){
+            $NetName = $ISTS_TeamNetworkTemplate.Replace("`$TeamNumber", $Team).Replace("`$NetworkID", $NetID)
+            $VlanID = [int]($VlanIDMappings.split(' ') | Where {$_.Split(":")[0] -eq $Team -and $_.Split(":")[1] -eq $NetID}).split(":")[2]
+            New-VDPortGroup -VDSwitch $VDSwitch -Name "$NetName" -VLanId $VlanID
+        }
+    }
+
 }
 
 function Invoke-ConfirmPrompt {
